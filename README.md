@@ -1,193 +1,38 @@
-# Unlimited OCR Works
+Run several OCR solutions on the same documents and visually compare the
+results. AWS Textract, PaddleOCR, and a local Unlimited-OCR model each extract
+text, tables, forms, and layout geometry from document images in `data/raw`.
+Every provider's raw JSON is compacted into LLM-friendly form, an agent
+reconstructs each document as static HTML from that JSON (and once from the
+raw image itself), and a standalone viewer renders each provider's bounding
+boxes over the source image beside its reconstruction.
 
-## AWS Textract forms and tables
+## Workflow
 
-The `scripts/run_textract.py` utility analyzes local PNG/JPEG images or PDF/TIFF
-documents with Amazon Textract's `FORMS` and `TABLES` features, then saves the
-complete Textract block response as JSON. `LINE` and `WORD` blocks are also
-included by Textract. Relationships between blocks are preserved, so form
-key/value pairs and table/cell contents can be reconstructed from their IDs.
-
-Install dependencies with `uv sync`. Configure AWS credentials using the normal
-AWS credential chain, or place `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
-`AWS_DEFAULT_REGION` in the project-root `.env` file. The script loads that file
-without overriding variables already set in the environment. Use an IAM role
-instead of static keys when running on AWS where possible. Never commit `.env`.
-Copy `.env.example` to `.env` to start; add `AWS_SESSION_TOKEN` when using
-temporary credentials.
-
-Images are sent using Textract's synchronous `AnalyzeDocument` operation. PDF
-and TIFF files use asynchronous analysis: the script uploads a temporary copy to
-an S3 bucket, polls Textract for completion, paginates all returned blocks, then
-deletes the temporary object. Pass a bucket in the same AWS region as Textract.
-The caller needs Textract permissions for the corresponding operation and S3
-permissions required to upload, read, and delete the temporary input.
-
-Examples:
-
-- `uv run python scripts/run_textract.py data/raw/scan.png`
-- `uv run python scripts/run_textract.py data/raw/scan.pdf --bucket my-textract-inputs`
-- `uv run python scripts/run_textract.py data/raw/scan.png --region us-east-1 --output data/processed/scan/textract/result.json`
-
-By default, JSON is saved to
-`data/processed/<input-name>/textract/result.json`.
-Use `--output` to choose another path. Async jobs are
-polled every five seconds by default, with a 30-minute timeout; use
-`--poll-interval` and `--timeout` to change these values. PDF/TIFF uploads are
-cleaned up after the job reaches a terminal state. If the client times out while
-a job is still running, the temporary S3 object is retained and its URI is
-printed so the job can finish.
-
-## PaddleOCR document analysis
-
-`scripts/run_paddle_ocr.py` runs PaddleOCR's PP-StructureV3 pipeline with table
-recognition and table-cell results enabled. It writes the complete raw pipeline
-response to `data/processed/<input-name>/paddle_ocr/result.json`. Document
-orientation correction and unwarping are disabled so its coordinates remain in
-the raw source-image coordinate system used by the bounding-box viewer.
-
-PaddlePaddle does not currently provide a CPython 3.14 wheel, so PaddleOCR runs
-in its own CPython 3.13 environment:
-
-```shell
-uv venv --python 3.13 .venv-paddleocr
-# Windows
-uv pip install --python .venv-paddleocr/Scripts/python.exe paddlepaddle==3.2.2 paddleocr==3.7.0 "paddlex[ocr]==3.7.2"
-# macOS/Linux
-uv pip install --python .venv-paddleocr/bin/python paddlepaddle==3.2.2 paddleocr==3.7.0 "paddlex[ocr]==3.7.2"
+```mermaid
+flowchart TD
+    A[Images in data/raw] --> B[scripts/run_all_ocr.py]
+    B --> C[AWS Textract]
+    B --> D[Unlimited-OCR]
+    B --> E[PaddleOCR]
+    C --> F["Raw provider JSON in data/processed/{document}/{provider}/"]
+    D --> F
+    E --> F
+    F --> G["Compact {name}_compact.json beside each raw file"]
+    G --> H["Agent applies the reconstruction skills"]
+    A --> H
+    H --> I["reconstruction.html per provider and for the raw image"]
+    I --> J[scripts/render_ocr_boxes.py]
+    J --> K["data/processed/ocr_comparison.html — standalone and shareable"]
 ```
 
-Run it against an image:
-
-```shell
-uv run python scripts/run_paddle_ocr.py data/raw/scan.png
-```
-
-Use `--python` to select a different PaddleOCR environment, `--lang` to change
-the OCR language, or `--output` to select a different JSON path.
-
-## Unlimited-OCR raw capture
-
-`scripts/run_unlimited_ocr.py` calls the existing `demo/run_ocr.py` helpers from
-the sibling `Unlimited-OCR-Universal` checkout, using that checkout's `.venv`.
-Create/sync that environment first. The output directory defaults to
-`data/processed/<input-name>/unlimited_ocr`; the model repository's normal demo
-artifacts are still produced there (`result.md`, annotated page images, and
-image crops). PDF pages are retained in `input_pages/` instead of being deleted.
-
-The helper additionally writes `raw_generation.json` with the prompt, full
-generated token IDs, generation text decoded without dropping special tokens,
-the processed Markdown, detected ref/det objects, normalized and pixel boxes,
-input dimensions, run settings, and paths to the demo artifacts. Boxes use the
-model's 0–999 coordinates and are also mapped to source-image pixel `xyxy` bounds.
-The token output contains no model confidence scores; the model does not emit
-per-object confidence values. The raw text and token IDs are kept even when a
-detection tag cannot be parsed into a box.
-
-Examples:
-
-```shell
-uv run python scripts/run_unlimited_ocr.py image data/raw/scan.png
-uv run python scripts/run_unlimited_ocr.py image data/raw/scan.png --mode base
-uv run python scripts/run_unlimited_ocr.py multi data/raw/page1.png data/raw/page2.png
-uv run python scripts/run_unlimited_ocr.py pdf data/raw/document.pdf --dpi 300
-```
-
-Pass `--repo` if the model checkout is not at the sibling default location, or
-`--python` if its virtual-environment interpreter is elsewhere. The prompt must
-begin with `<image>`. The image mode applies to one image; multi-image and PDF
-inference use the model's base mode.
-
-## Running all providers
-
-`scripts/run_all_ocr.py` runs Textract, Unlimited-OCR, and PaddleOCR for each
-supplied image. It preserves each provider's normal output and writes batch
-metadata containing UTC start/end times, provider commands and parameters,
-return codes, diagnostic output, and elapsed runtime in seconds. After the
-providers finish, it also writes a compact LLM-optimized `<name>_compact.json`
-copy of every OCR JSON alongside each raw file, never modifying the raw
-provider responses.
-
-```shell
-uv run python scripts/run_all_ocr.py data/raw/*.png data/raw/*.jpg
-```
-
-The metadata defaults to `data/processed/ocr_run_metadata.json`. Use
-`--metadata` to choose another path, `--region` for Textract, `--unlimited-mode`
-for Unlimited-OCR, and `--paddle-lang` or `--paddle-python` for PaddleOCR.
-Pass `--bucket` to enable Textract analysis of TIFF inputs; Textract is skipped
-with a notice for formats it cannot process (BMP, WebP, or TIFF without
-`--bucket`). Files that cannot be compacted are skipped with a warning instead
-of failing the batch.
-
-## OCR bounding-box viewer
-
-`scripts/render_ocr_boxes.py` creates a self-contained interactive HTML viewer
-for every discovered BMP, JPEG, PNG, or WebP image under `data/raw`. It embeds
-each source image
-alongside the corresponding pre-generated HTML reconstruction from
-`data/processed/<input-name>`. Select a document and provider to view its
-boxes on the left and reconstruction on the right. Select **Raw image** to
-display the source image without boxes alongside the raw-image reconstruction.
-The viewer exposes only providers available for the selected document. The
-reconstruction scales to its pane width and its pane height matches the rendered
-source image. Hovering and clicking boxes affects only the box overlay; Textract
-`PAGE` blocks are omitted, while Textract child blocks and PaddleOCR table
-cells/text take hover precedence over their parent regions.
-
-```shell
-uv run python scripts/render_ocr_boxes.py
-```
-
-The viewer requires standardized reconstruction files: provider reconstructions
-at `data/processed/<input-name>/<provider>/reconstruction.html`
-and the raw-image reconstruction at
-`data/processed/<input-name>/raw_image/reconstruction.html`.
-The default output is `data/processed/ocr_comparison.html`, a standalone file
-that embeds every source image and reconstruction for sharing. Pass one or more image
-paths to restrict the viewer, override a single image's JSON locations with
-`--textract`, `--unlimited`, and `--paddle`, or use `--output` to choose another
-HTML path.
-
-## LLM-optimized OCR JSON
-
-As its final step, `scripts/run_all_ocr.py` converts every raw OCR JSON under
-`data/processed` into a compact `<name>_compact.json` counterpart in the same
-directory (for example, `textract/result_compact.json` next to
-`textract/result.json`). It never modifies the raw provider responses.
-
-The compact files retain the content and layout evidence required to reproduce a
-document: source filename, page dimensions, reading-order text, pixel or
-normalized geometry, non-rectangular polygons, recognized table HTML/cells,
-form key/value pairs, checkbox states, and Unlimited-OCR Markdown/object boxes.
-For each provider, these fields are organized per page and ordered top-to-bottom,
-then left-to-right where the provider did not supply an explicit order.
-
-To minimize LLM input, the optimizer removes absolute paths, OCR runtime and
-model settings, provider IDs and relationship graphs, word-level decomposition
-already represented by lines/cells, duplicate detector output, generated token
-IDs, raw generation markup, commands, timestamps, diagnostics, and artifact
-paths. Raw JSON remains available when any provider-specific metadata is needed.
-
-Compact field names are deliberately short. `v` is the schema version; `g` is
-Textract geometry (`b` = `[left, top, width, height]`, with optional `q`
-quadrilateral); `n` is page number; and table cells are
-`[row, column, row_span, column_span, text, geometry, confidence]`. PaddleOCR
-line records are `[text, xyxy_box, confidence, optional_polygon]`, regions are
-`[label, xyxy_box, content, reading_order]`, and Unlimited-OCR objects are
-`[page, label, pixel_boxes, reference_text]`.
-
-## End-to-end reconstruction workflow
-
-1. Run each configured OCR provider; this also creates the compact
-   LLM-optimized OCR JSON used by agents:
+1. Run every OCR provider; this also writes the compact LLM-optimized JSON:
 
    ```shell
    uv run python scripts/run_all_ocr.py data/raw/document.png
    ```
 
-2. Ask a Cursor agent to apply
-   `.agents/skills/ocr-html-reconstruction/SKILL.md` once for each optimized
+2. Ask an agent to apply
+   `.agents/skills/ocr-html-reconstruction/SKILL.md` once for each compact
    provider JSON, and
    `.agents/skills/raw-image-html-reconstruction/SKILL.md` once for the raw
    image. These skills write reconstructions to
@@ -198,3 +43,113 @@ line records are `[text, xyxy_box, confidence, optional_polygon]`, regions are
    ```shell
    uv run python scripts/render_ocr_boxes.py
    ```
+
+## AWS Textract
+
+`scripts/run_textract.py` analyzes PNG/JPEG images synchronously, or PDF/TIFF
+documents asynchronously via a temporary S3 upload that is deleted after the
+job, using Textract's `FORMS` and `TABLES` features. The complete block
+response is saved to `data/processed/<input-name>/textract/result.json`.
+
+Install dependencies with `uv sync`. Configure AWS credentials using the normal
+credential chain, or copy `.env.example` to a project-root `.env` and fill in
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_DEFAULT_REGION` (add
+`AWS_SESSION_TOKEN` for temporary credentials). Never commit `.env`.
+
+```shell
+uv run python scripts/run_textract.py data/raw/scan.png
+uv run python scripts/run_textract.py data/raw/scan.pdf --bucket my-textract-inputs
+```
+
+Use `--region`, `--output`, `--poll-interval`, and `--timeout` to override the
+defaults.
+
+## PaddleOCR
+
+`scripts/run_paddle_ocr.py` runs the PP-StructureV3 pipeline with table
+recognition and table-cell results, writing the raw response to
+`data/processed/<input-name>/paddle_ocr/result.json`. Orientation correction
+and unwarping are disabled so coordinates stay in the source-image system used
+by the viewer.
+
+PaddlePaddle has no CPython 3.14 wheel, so PaddleOCR runs in its own CPython
+3.13 environment:
+
+```shell
+uv venv --python 3.13 .venv-paddleocr
+# Windows
+uv pip install --python .venv-paddleocr/Scripts/python.exe paddlepaddle==3.2.2 paddleocr==3.7.0 "paddlex[ocr]==3.7.2"
+# macOS/Linux
+uv pip install --python .venv-paddleocr/bin/python paddlepaddle==3.2.2 paddleocr==3.7.0 "paddlex[ocr]==3.7.2"
+```
+
+```shell
+uv run python scripts/run_paddle_ocr.py data/raw/scan.png
+```
+
+Use `--python`, `--lang`, or `--output` to override the defaults.
+
+## Unlimited-OCR
+
+`scripts/run_unlimited_ocr.py` runs the sibling `Unlimited-OCR-Universal`
+checkout's demo using that checkout's `.venv` (create/sync it first, or pass
+`--repo`/`--python`). It writes the demo artifacts (`result.md`, annotated
+images, crops) plus `raw_generation.json` — prompt, token IDs, raw and
+processed text, and detected objects with pixel boxes — to
+`data/processed/<input-name>/unlimited_ocr`.
+
+```shell
+uv run python scripts/run_unlimited_ocr.py image data/raw/scan.png
+uv run python scripts/run_unlimited_ocr.py multi data/raw/page1.png data/raw/page2.png
+uv run python scripts/run_unlimited_ocr.py pdf data/raw/document.pdf --dpi 300
+```
+
+The image mode accepts `--mode gundam` (default) or `--mode base`; multi-image
+and PDF inference always use the base mode. The prompt must begin with
+`<image>`.
+
+## Running all providers
+
+`scripts/run_all_ocr.py` runs Textract, Unlimited-OCR, and PaddleOCR for each
+supplied image, writes batch metadata (provider commands, parameters, return
+codes, diagnostics, and runtimes) to `data/processed/ocr_run_metadata.json`,
+then compacts every raw OCR JSON as described below.
+
+```shell
+uv run python scripts/run_all_ocr.py data/raw/*.png data/raw/*.jpg
+```
+
+Options: `--metadata`, `--region`, `--bucket` (enables Textract for TIFF
+inputs), `--unlimited-mode`, `--paddle-lang`, and `--paddle-python`. Textract
+is skipped with a notice for formats it cannot process; files that cannot be
+compacted are skipped with a warning instead of failing the batch.
+
+## LLM-optimized OCR JSON
+
+As its final step, `scripts/run_all_ocr.py` writes a compact
+`<name>_compact.json` beside every raw OCR JSON under `data/processed`, never
+modifying the raw responses. The compact files keep the content and layout
+evidence needed to reproduce each document — reading-order text, geometry,
+table HTML and cells, form key/value pairs, checkbox states, and Unlimited-OCR
+Markdown with object boxes — while dropping runtime settings, relationship
+graphs, and machine-specific paths.
+
+## OCR comparison viewer
+
+`scripts/render_ocr_boxes.py` builds one self-contained interactive HTML file
+for every BMP, JPEG, PNG, or WebP image under `data/raw`: the source image
+with interactive provider bounding boxes on the left, and the corresponding
+pre-generated HTML reconstruction on the right. Select **Raw image** to view
+the source without boxes beside the raw-image reconstruction.
+
+```shell
+uv run python scripts/render_ocr_boxes.py
+```
+
+The viewer requires reconstructions at
+`data/processed/<input-name>/<provider>/reconstruction.html` and
+`data/processed/<input-name>/raw_image/reconstruction.html`. The output
+defaults to `data/processed/ocr_comparison.html` with every image and
+reconstruction embedded for sharing. Pass image paths to restrict the viewer,
+or use `--textract`, `--unlimited`, `--paddle`, and `--output` to override
+locations.
