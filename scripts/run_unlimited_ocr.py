@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
@@ -243,7 +245,7 @@ def extract_objects(
             label = detection[:open_bracket].strip()
             try:
                 parsed_coordinates = ast.literal_eval(detection[open_bracket:])
-            except (SyntaxError, ValueError):
+            except (SyntaxError, ValueError):  # fmt: skip
                 parsed_coordinates = None
             boxes = normalize_boxes(parsed_coordinates)
             if boxes is None:
@@ -299,6 +301,23 @@ def source_dimensions(image_paths: list[Path]) -> list[dict[str, int]]:
     return dimensions
 
 
+def write_utf8_stdout(text: str) -> None:
+    """Write Unicode OCR output without relying on the Windows console encoding."""
+    sys.stdout.buffer.write((text + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+
+@contextlib.contextmanager
+def quiet_model_output() -> Generator[None]:
+    """Mute model output using UTF-8 streams that accept all OCR characters."""
+    with (
+        open(os.devnull, "w", encoding="utf-8") as devnull,
+        contextlib.redirect_stdout(devnull),
+        contextlib.redirect_stderr(devnull),
+    ):
+        yield
+
+
 def run_worker(args: argparse.Namespace) -> int:
     """Run model inference, retaining demo artifacts and complete raw generations."""
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
@@ -328,7 +347,7 @@ def run_worker(args: argparse.Namespace) -> int:
     dimensions = source_dimensions(image_paths)
 
     generations: list[dict[str, Any]] = []
-    with demo._quiet():
+    with quiet_model_output():
         tokenizer, model = demo.load(device)
         original_generate = model.generate
 
@@ -452,7 +471,7 @@ def run_worker(args: argparse.Namespace) -> int:
     )
 
     if processed_markdown is not None:
-        print(processed_markdown)
+        write_utf8_stdout(processed_markdown)
         print(f"\nSaved to: {result_path}", file=sys.stderr)
     else:
         print(f"No result written to {result_path}", file=sys.stderr)

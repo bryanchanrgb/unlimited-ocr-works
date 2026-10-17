@@ -72,24 +72,47 @@ uv run python scripts/run_paddle_ocr.py data/raw/scan.png
 Use `--python` to select a different PaddleOCR environment, `--lang` to change
 the OCR language, or `--output` to select a different JSON path.
 
+## Running all providers
+
+`scripts/run_all_ocr.py` runs Textract, Unlimited-OCR, and PaddleOCR for each
+supplied image. It preserves each provider's normal output and writes batch
+metadata containing UTC start/end times, provider commands and parameters,
+return codes, diagnostic output, and elapsed runtime in seconds.
+
+```shell
+uv run python scripts/run_all_ocr.py data/raw/*.png data/raw/*.jpg
+```
+
+The metadata defaults to `data/processed/ocr_run_metadata.json`. Use
+`--metadata` to choose another path, `--region` for Textract, `--unlimited-mode`
+for Unlimited-OCR, and `--paddle-lang` or `--paddle-python` for PaddleOCR.
+
 ## OCR bounding-box viewer
 
 `scripts/render_ocr_boxes.py` creates a self-contained interactive HTML viewer
-from the Textract, Unlimited-OCR, and PaddleOCR JSON for one source image. It
-embeds the source image alongside the provider's extracted text in reading
-order. Select one provider at a time; boxes use a shared semantic colour system
-(for example, tables, cells, lines, and headings) rather than provider colours.
-Hovering a box links to its text, while clicking retains that selection as other
-objects are inspected. Textract child blocks and PaddleOCR table cells/text take
-hover precedence over their parent regions.
+from the Textract, Unlimited-OCR, and PaddleOCR JSON for one or more source
+images. It embeds the source image alongside the corresponding pre-generated
+HTML reconstruction from `data/processed/llm_optimized`. Select a provider to
+view its boxes on the left and reconstruction on the right. Select **Raw image**
+to display the source image without boxes alongside the raw-image
+reconstruction. The reconstruction scales to its pane width and its pane height
+matches the rendered source image. Hovering and clicking boxes affects only the
+box overlay; Textract `PAGE` blocks are omitted, while Textract child blocks and
+PaddleOCR table cells/text take hover precedence over their parent regions.
 
 ```shell
 uv run python scripts/render_ocr_boxes.py data/raw/scan.png
+uv run python scripts/render_ocr_boxes.py data/raw/page-1.png data/raw/page-2.png
 ```
 
+The viewer requires standardized reconstruction files: provider reconstructions
+at `data/processed/llm_optimized/<input-name>/<provider>/reconstruction.html`
+and the raw-image reconstruction at
+`data/processed/llm_optimized/<input-name>/raw_image/reconstruction.html`.
 The default output is `data/processed/<input-name>/ocr_boxes.html`. Override
 the input JSON locations with `--textract`, `--unlimited`, and `--paddle`, or
-use `--output` to choose another HTML path.
+use `--output` to choose another HTML path. For multiple images, the default is
+`data/processed/ocr_boxes.html`, with a document selector in the viewer.
 
 ## Unlimited-OCR raw capture
 
@@ -122,3 +145,75 @@ Pass `--repo` if the model checkout is not at the sibling default location, or
 `--python` if its virtual-environment interpreter is elsewhere. The prompt must
 begin with `<image>`. The image mode applies to one image; multi-image and PDF
 inference use the model's base mode.
+
+## LLM-optimized OCR JSON
+
+`scripts/optimize_ocr_for_llm.py` converts every OCR JSON under
+`data/processed` into a compact counterpart under
+`data/processed/llm_optimized`. It never modifies the raw provider responses.
+
+```shell
+uv run python scripts/optimize_ocr_for_llm.py
+```
+
+The compact files retain the content and layout evidence required to reproduce a
+document: source filename, page dimensions, reading-order text, pixel or
+normalized geometry, non-rectangular polygons, recognized table HTML/cells,
+form key/value pairs, checkbox states, and Unlimited-OCR Markdown/object boxes.
+For each provider, these fields are organized per page and ordered top-to-bottom,
+then left-to-right where the provider did not supply an explicit order.
+
+To minimize LLM input, the optimizer removes absolute paths, OCR runtime and
+model settings, provider IDs and relationship graphs, word-level decomposition
+already represented by lines/cells, duplicate detector output, generated token
+IDs, raw generation markup, commands, timestamps, diagnostics, and artifact
+paths. Raw JSON remains available when any provider-specific metadata is needed.
+
+Compact field names are deliberately short. `v` is the schema version; `g` is
+Textract geometry (`b` = `[left, top, width, height]`, with optional `q`
+quadrilateral); `n` is page number; and table cells are
+`[row, column, row_span, column_span, text, geometry, confidence]`. PaddleOCR
+line records are `[text, xyxy_box, confidence, optional_polygon]`, regions are
+`[label, xyxy_box, content, reading_order]`, and Unlimited-OCR objects are
+`[page, label, pixel_boxes, reference_text]`.
+
+## End-to-end reconstruction workflow
+
+1. Run each configured OCR provider:
+
+   ```shell
+   uv run python scripts/run_all_ocr.py data/raw/document.png
+   ```
+
+2. Create compact OCR inputs for agents:
+
+   ```shell
+   uv run python scripts/optimize_ocr_for_llm.py
+   ```
+
+3. Ask a Copilot agent to apply
+   `.agents/skills/ocr-html-reconstruction/SKILL.md` once for each optimized
+   provider JSON, and
+   `.agents/skills/raw-image-html-reconstruction/SKILL.md` once for the raw
+   image. These skills write reconstructions to
+   `data/processed/llm_optimized/<document>/<source>/reconstruction.html`.
+4. Render the provider box overlay and its reconstruction panel:
+
+   ```shell
+   uv run python scripts/render_ocr_boxes.py data/raw/document.png
+   ```
+
+5. Combine all standardized reconstruction HTML files for cross-document and
+   cross-provider comparison:
+
+   ```shell
+   uv run python scripts/combine_reconstruction_html.py
+   ```
+
+## Reconstruction comparison
+
+`data/processed/llm_optimized/reconstruction_comparison.html` is a
+self-contained viewer for the generated reconstruction HTML. Use its document
+and source selectors to compare each available provider reconstruction with the
+raw-image reconstruction. Recreate it with
+`scripts/combine_reconstruction_html.py`.

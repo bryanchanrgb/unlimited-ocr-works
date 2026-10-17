@@ -1,4 +1,4 @@
-"""Render Textract and Unlimited-OCR bounding boxes over a raw image in HTML."""
+"""Render OCR bounding boxes beside pre-generated HTML reconstructions."""
 
 from __future__ import annotations
 
@@ -12,12 +12,18 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+LLM_OPTIMIZED_DIR = PROCESSED_DIR / "llm_optimized"
 
 
 def parse_args() -> argparse.Namespace:
     """Parse paths for the raw image, OCR results, and rendered HTML."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("image", type=Path, help="Raw PNG or JPEG image")
+    parser.add_argument(
+        "images",
+        nargs="+",
+        type=Path,
+        help="One or more raw PNG or JPEG images",
+    )
     parser.add_argument("--textract", type=Path, help="Textract result JSON path")
     parser.add_argument(
         "--unlimited",
@@ -122,6 +128,8 @@ def textract_boxes(document: dict[str, Any]) -> list[dict[str, Any]]:
     depths = textract_depths(blocks_by_id)
     rendered: list[dict[str, Any]] = []
     for block in blocks:
+        if block.get("BlockType") == "PAGE":
+            continue
         bounding_box = block.get("Geometry", {}).get("BoundingBox")
         if not isinstance(bounding_box, dict):
             continue
@@ -380,121 +388,9 @@ def safe_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
 
 
-TABLE_HTML_PATTERN = re.compile(r"<table[\s\S]*?</table>", re.IGNORECASE)
-UNLIMITED_SEGMENT_PATTERN = re.compile(
-    r"<\|det\|>.*?<\|/det\|>(.*?)(?=<\|det\|>|$)", re.DOTALL
-)
-
-
-def textract_segments(document: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build reading-order text segments linked to Textract line blocks."""
-    lines = [
-        block
-        for block in document.get("blocks", [])
-        if isinstance(block, dict)
-        and block.get("BlockType") == "LINE"
-        and isinstance(block.get("Text"), str)
-    ]
-    lines.sort(
-        key=lambda block: (
-            block.get("Geometry", {}).get("BoundingBox", {}).get("Top", 0),
-            block.get("Geometry", {}).get("BoundingBox", {}).get("Left", 0),
-        )
-    )
-    return [{"box_id": block["Id"], "content": block["Text"]} for block in lines]
-
-
-def unlimited_segments(document: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build reading-order segments linked to Unlimited-OCR detection boxes."""
-    generations = document.get("generations")
-    if not isinstance(generations, list):
-        raise TypeError("Unlimited-OCR JSON does not contain a generations array")
-    segments: list[dict[str, Any]] = []
-    for generation_index, generation in enumerate(generations):
-        if not isinstance(generation, dict):
-            continue
-        raw_text = generation.get("raw_generated_text")
-        if not isinstance(raw_text, str):
-            continue
-        for object_index, match in enumerate(
-            UNLIMITED_SEGMENT_PATTERN.finditer(raw_text)
-        ):
-            content = match.group(1).strip()
-            if content:
-                segments.append(
-                    {
-                        "box_id": (
-                            f"generation-{generation_index}-object-{object_index}-box-0"
-                        ),
-                        "content": content,
-                    }
-                )
-    return segments
-
-
-def paddle_segments(document: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build reading-order segments linked to PaddleOCR layout blocks."""
-    segments: list[dict[str, Any]] = []
-    for page_index, page in enumerate(document.get("pages", [])):
-        result = page.get("res") if isinstance(page, dict) else None
-        if not isinstance(result, dict):
-            continue
-        blocks = [
-            block
-            for block in result.get("parsing_res_list", [])
-            if isinstance(block, dict) and isinstance(block.get("block_content"), str)
-        ]
-        blocks.sort(
-            key=lambda block: (
-                block.get("block_order") is None,
-                block.get("block_order", 0),
-                block.get("block_bbox", [0, 0])[1],
-            )
-        )
-        for block in blocks:
-            content = block["block_content"].strip()
-            box_id = f"page-{page_index}-layout-{block.get('block_id')}"
-            table_match = TABLE_HTML_PATTERN.search(content)
-            if table_match:
-                before = re.sub(
-                    r"</?(?:html|body)>", "", content[: table_match.start()]
-                ).strip()
-                if before:
-                    segments.append({"box_id": box_id, "content": before})
-                content = table_match.group(0)
-            if content:
-                segments.append({"box_id": box_id, "content": content})
-    return segments
-
-
-def assign_spans(boxes: list[dict[str, Any]], segments: list[dict[str, Any]]) -> None:
-    """Attach each box the indexes of the text segments geometrically inside it."""
-    box_by_id = {box["id"]: box for box in boxes}
-    for box in boxes:
-        spans = []
-        for index, segment in enumerate(segments):
-            segment_box = box_by_id.get(segment["box_id"])
-            if segment_box is None:
-                continue
-            center_x = segment_box["left"] + segment_box["width"] / 2
-            center_y = segment_box["top"] + segment_box["height"] / 2
-            if (
-                box["left"] <= center_x <= box["left"] + box["width"]
-                and box["top"] <= center_y <= box["top"] + box["height"]
-            ):
-                spans.append(index)
-        if spans:
-            box["spans"] = spans
-
-
-def html_document(
-    image_url: str,
-    boxes: list[dict[str, Any]],
-    segments_by_tool: dict[str, list[dict[str, Any]]],
-) -> str:
-    """Build a standalone interactive HTML document for the supplied OCR boxes."""
-    return (
-        """<!doctype html>
+def html_document(documents: list[dict[str, Any]]) -> str:
+    """Build a standalone interactive HTML document for OCR result collections."""
+    return """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -506,6 +402,7 @@ def html_document(
 body { background: #fff; margin: 0; }
 header { align-items: center; backdrop-filter: blur(12px); background: #fffffff0; border-bottom: 1px solid #e5e5e5; display: flex; gap: 22px; padding: 13px max(24px, calc((100vw - 1500px) / 2)); position: sticky; top: 0; z-index: 10000; }
 header strong { color: #1d1d1f; font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+.document-picker { background: transparent; border: 0; color: #1d1d1f; font: inherit; font-size: 13px; outline: none; padding: 7px 24px 7px 0; }
 .provider { display: flex; gap: 2px; margin-left: auto; }
 .provider input { appearance: none; position: absolute; }
 .provider label { border-bottom: 2px solid transparent; color: #6e6e73; cursor: pointer; font-size: 13px; padding: 7px 10px 5px; }
@@ -526,44 +423,51 @@ main { display: grid; gap: 26px; grid-template-columns: minmax(0, 1.08fr) minmax
 .type-heading { --stroke: #cf7777; --fill: #f3c4c42b; }
 .type-footer, .type-aside, .type-key-value, .type-selection { --stroke: #7ca89c; --fill: #b9d9cd2b; }
 .type-other { --stroke: #a4a4a4; --fill: #d5d5d51f; }
-#reading { max-height: calc(100vh - 145px); min-height: 640px; overflow: auto; padding: 22px 28px 34px; }
-.seg { border-left: 2px solid transparent; display: block; margin: 0 0 6px; padding: 2px 8px; transition: background .12s, border-color .12s; white-space: pre-wrap; }
-.seg.hovered { background: #f7e7c1; border-color: #d9a62e; }
-.seg.selected { background: #d9efe8; border-color: #2fa08c; }
-.seg p { margin: 0 0 .6em; }
-.seg table { border-collapse: collapse; font-size: 12px; margin: .5em 0; white-space: normal; width: 100%; }
-.seg td, .seg th { border: 1px solid #d2d2d7; padding: 4px 6px; vertical-align: top; }
+#reconstruction { border: 0; display: block; width: 100%; }
 #tooltip { background: #1d1d1ff0; box-shadow: 0 5px 18px #0002; color: #fff; display: none; font: 12px/1.45 -apple-system, system-ui, sans-serif; max-width: min(460px, calc(100vw - 32px)); padding: 9px 11px; pointer-events: none; position: fixed; white-space: pre-wrap; z-index: 20000; }
-@media (max-width: 900px) { main { grid-template-columns: 1fr; } #reading { max-height: none; min-height: 280px; } .provider { margin-left: 0; } header { flex-wrap: wrap; } }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } .provider { margin-left: 0; } header { flex-wrap: wrap; } }
 </style>
 </head>
 <body>
 <header>
   <strong>Document reader</strong>
+  <select class="document-picker" id="document-picker" aria-label="Document"></select>
   <div class="provider">
     <label><input checked type="radio" name="provider" value="textract"> Textract</label>
     <label><input type="radio" name="provider" value="unlimited"> Unlimited OCR</label>
     <label><input type="radio" name="provider" value="paddle"> PaddleOCR</label>
+    <label><input type="radio" name="provider" value="raw_image"> Raw image</label>
   </div>
 </header>
 <main>
   <section class="panel"><div class="panel-heading"><span>Source image</span><span id="counts"></span></div><div id="image-wrap"><div id="stage"><img id="source-image" alt="Raw OCR input"></div></div></section>
-  <section class="panel"><div class="panel-heading"><span>Extracted text</span><span id="reading-label"></span></div><article id="reading"></article></section>
+  <section class="panel"><div class="panel-heading"><span>HTML reconstruction</span><span id="reading-label"></span></div><iframe id="reconstruction" sandbox="allow-same-origin" title="Selected HTML reconstruction"></iframe></section>
 </main>
 <div id="tooltip" role="tooltip"></div>
 <script>
-const imageUrl = __IMAGE_URL__;
-const boxes = __BOXES__;
-const segmentsByTool = __SEGMENTS_BY_TOOL__;
+const documents = __DOCUMENTS__;
 const image = document.getElementById("source-image");
 const stage = document.getElementById("stage");
 const tooltip = document.getElementById("tooltip");
 const counts = document.getElementById("counts");
-const reading = document.getElementById("reading");
+const reconstruction = document.getElementById("reconstruction");
+const documentPicker = document.getElementById("document-picker");
 let activeTool = "textract";
 let selectedBox = null;
 let hoveredBox = null;
-let boxById = {};
+let activeDocument = documents[0];
+let boxes = [];
+
+function setDocument(index) {
+  activeDocument = documents[index];
+  boxes = activeDocument.boxes;
+  selectedBox = null;
+  hoveredBox = null;
+  image.alt = activeDocument.name;
+  image.src = activeDocument.image_url;
+  renderReconstruction();
+  renderBoxes();
+}
 
 function semanticType(box) {
   const raw = String(box.type).toUpperCase();
@@ -583,7 +487,10 @@ function semanticType(box) {
 }
 
 function providerName(tool) {
-  return tool === "textract" ? "Textract" : tool === "unlimited" ? "Unlimited OCR" : "PaddleOCR";
+  if (tool === "textract") return "Textract";
+  if (tool === "unlimited") return "Unlimited OCR";
+  if (tool === "paddle") return "PaddleOCR";
+  return "Raw image";
 }
 
 function formatValue(value) {
@@ -643,81 +550,41 @@ function addBox(box, rank) {
 
 function renderBoxes() {
   stage.querySelectorAll(".box").forEach(box => box.remove());
-  boxById = {};
   const ordered = boxes.filter(box => box.tool === activeTool).sort((left, right) => {
     const depth = left.depth - right.depth;
     if (depth) return depth;
     return right.width * right.height - left.width * left.height;
   });
-  ordered.forEach((box, rank) => { boxById[box.id] = box; addBox(box, rank + 1); });
+  ordered.forEach((box, rank) => addBox(box, rank + 1));
   updateCounts();
 }
 
-function renderReading() {
-  reading.replaceChildren();
+function renderReconstruction() {
   document.getElementById("reading-label").textContent = providerName(activeTool);
-  const segments = segmentsByTool[activeTool] || [];
-  if (!segments.length) {
-    reading.textContent = "No extracted text was emitted for this provider.";
-    return;
-  }
-  segments.forEach((segment, index) => {
-    const element = document.createElement("div");
-    element.className = "seg";
-    element.dataset.seg = String(index);
-    if (/^\\s*<table/i.test(segment.content)) {
-      renderSafeTable(element, segment.content);
-    } else {
-      segment.content.split(/\\n{2,}/).forEach(paragraph => {
-        if (!paragraph.trim()) return;
-        const heading = paragraph.match(/^(#{1,6})\\s+([\\s\\S]*)$/);
-        const child = document.createElement(heading ? `h${heading[1].length}` : "p");
-        child.textContent = heading ? heading[2] : paragraph;
-        element.append(child);
-      });
-    }
-    element.addEventListener("mouseenter", () => { hoveredBox = boxById[segment.box_id] || null; refreshHighlights(); });
-    element.addEventListener("mouseleave", () => { hoveredBox = null; refreshHighlights(); });
-    element.addEventListener("click", () => {
-      const linkedBox = boxById[segment.box_id] || null;
-      selectedBox = selectedBox && linkedBox && selectedBox.id === linkedBox.id ? null : linkedBox;
-      refreshHighlights();
-    });
-    reading.append(element);
-  });
-  refreshHighlights();
+  reconstruction.srcdoc = activeDocument.reconstructions[activeTool];
 }
 
-function renderSafeTable(container, markup) {
-  const source = new DOMParser().parseFromString(markup, "text/html").querySelector("table");
-  if (!source) {
-    container.textContent = markup;
-    return;
-  }
-  const table = document.createElement("table");
-  source.querySelectorAll("tr").forEach(sourceRow => {
-    const row = document.createElement("tr");
-    sourceRow.querySelectorAll(":scope > th, :scope > td").forEach(sourceCell => {
-      const cell = document.createElement(sourceCell.tagName.toLowerCase());
-      cell.colSpan = sourceCell.colSpan;
-      cell.rowSpan = sourceCell.rowSpan;
-      cell.textContent = sourceCell.textContent;
-      row.append(cell);
-    });
-    table.append(row);
-  });
-  container.append(table);
+function fitReconstruction() {
+  if (!image.clientWidth || !image.clientHeight) return;
+  reconstruction.style.height = `${image.clientHeight}px`;
+  const reconstructionDocument = reconstruction.contentDocument;
+  const page = reconstructionDocument?.querySelector(".page");
+  if (!page) return;
+  page.style.transform = "none";
+  const scale = reconstruction.clientWidth / page.offsetWidth;
+  page.style.transformOrigin = "top left";
+  page.style.transform = `scale(${scale})`;
+  reconstructionDocument.documentElement.style.overflow = "hidden";
+  reconstructionDocument.body.style.height = `${page.offsetHeight * scale}px`;
+  reconstructionDocument.body.style.margin = "0";
+  reconstructionDocument.body.style.overflow = "hidden";
+  reconstructionDocument.body.style.width = `${page.offsetWidth * scale}px`;
 }
 
 function refreshHighlights() {
   document.querySelectorAll(".box").forEach(element => {
     element.classList.toggle("hovered", !!hoveredBox && element.dataset.id === hoveredBox.id);
     element.classList.toggle("selected", !!selectedBox && element.dataset.id === selectedBox.id);
-  });
-  document.querySelectorAll(".seg").forEach(element => {
-    const index = Number(element.dataset.seg);
-    element.classList.toggle("hovered", !!hoveredBox && (hoveredBox.spans || []).includes(index));
-    element.classList.toggle("selected", !!selectedBox && (selectedBox.spans || []).includes(index));
   });
 }
 
@@ -727,50 +594,86 @@ document.querySelectorAll('input[name="provider"]').forEach(control => {
     selectedBox = null;
     hoveredBox = null;
     tooltip.style.display = "none";
-    renderReading();
+    renderReconstruction();
     renderBoxes();
     updateCounts();
   });
 });
 
-image.src = imageUrl;
-image.addEventListener("load", () => { renderBoxes(); renderReading(); }, { once: true });
+documents.forEach((item, index) => {
+  const option = window.document.createElement("option");
+  option.value = String(index);
+  option.textContent = item.name;
+  documentPicker.append(option);
+});
+documentPicker.addEventListener("change", () => setDocument(Number(documentPicker.value)));
+image.addEventListener("load", () => { renderBoxes(); fitReconstruction(); });
+reconstruction.addEventListener("load", fitReconstruction);
+window.addEventListener("resize", fitReconstruction);
+setDocument(0);
 </script>
 </body>
 </html>
-""".replace("__IMAGE_URL__", safe_json(image_url))
-        .replace("__BOXES__", safe_json(boxes))
-        .replace("__SEGMENTS_BY_TOOL__", safe_json(segments_by_tool))
-    )
+""".replace("__DOCUMENTS__", safe_json(documents))
 
 
-def main() -> int:
-    """Render OCR JSON for one raw image as a self-contained HTML file."""
-    args = parse_args()
-    image_path = args.image.expanduser().resolve()
-    if not image_path.is_file():
-        raise ValueError(f"Raw image does not exist: {image_path}")
-
-    stem = image_path.stem
-    textract_path = (
+def result_paths(
+    image_path: Path,
+    args: argparse.Namespace,
+    multiple_images: bool,
+) -> tuple[Path, Path, Path]:
+    """Return provider result paths for one image."""
+    if multiple_images and (args.textract or args.unlimited or args.paddle):
+        raise ValueError(
+            "--textract, --unlimited, and --paddle may only be used with one image"
+        )
+    root = PROCESSED_DIR / image_path.stem
+    return (
         args.textract.expanduser().resolve()
         if args.textract
-        else PROCESSED_DIR / stem / "textract" / "result.json"
-    )
-    unlimited_path = (
+        else root / "textract" / "result.json",
         args.unlimited.expanduser().resolve()
         if args.unlimited
-        else PROCESSED_DIR / stem / "unlimited_ocr" / "raw_generation.json"
-    )
-    paddle_path = (
+        else root / "unlimited_ocr" / "raw_generation.json",
         args.paddle.expanduser().resolve()
         if args.paddle
-        else PROCESSED_DIR / stem / "paddle_ocr" / "result.json"
+        else root / "paddle_ocr" / "result.json",
     )
-    output_path = (
-        args.output.expanduser().resolve()
-        if args.output
-        else PROCESSED_DIR / stem / "ocr_boxes.html"
+
+
+def reconstruction_paths(image_path: Path) -> dict[str, Path]:
+    """Return standardized reconstruction HTML paths for one source image."""
+    root = LLM_OPTIMIZED_DIR / image_path.stem
+    return {
+        "textract": root / "textract" / "reconstruction.html",
+        "unlimited": root / "unlimited_ocr" / "reconstruction.html",
+        "paddle": root / "paddle_ocr" / "reconstruction.html",
+        "raw_image": root / "raw_image" / "reconstruction.html",
+    }
+
+
+def load_reconstructions(image_path: Path) -> dict[str, str]:
+    """Load every provider and raw-image reconstruction for one source image."""
+    paths = reconstruction_paths(image_path)
+    missing = [path for path in paths.values() if not path.is_file()]
+    if missing:
+        rendered_paths = ", ".join(str(path) for path in missing)
+        raise ValueError(f"Reconstruction HTML does not exist: {rendered_paths}")
+    return {
+        provider: path.read_text(encoding="utf-8") for provider, path in paths.items()
+    }
+
+
+def make_document(
+    image_path: Path,
+    args: argparse.Namespace,
+    multiple_images: bool,
+) -> dict[str, Any]:
+    """Load one image and its provider results into an HTML viewer payload."""
+    textract_path, unlimited_path, paddle_path = result_paths(
+        image_path,
+        args,
+        multiple_images,
     )
     for label, path in (
         ("Textract", textract_path),
@@ -786,21 +689,44 @@ def main() -> int:
     textract = textract_boxes(textract_document)
     unlimited = unlimited_boxes(unlimited_document)
     paddle = paddle_boxes(paddle_document)
-    segments_by_tool = {
-        "textract": textract_segments(textract_document),
-        "unlimited": unlimited_segments(unlimited_document),
-        "paddle": paddle_segments(paddle_document),
+    return {
+        "name": image_path.name,
+        "image_url": image_data_url(image_path),
+        "boxes": textract + unlimited + paddle,
+        "reconstructions": load_reconstructions(image_path),
     }
-    assign_spans(textract, segments_by_tool["textract"])
-    assign_spans(unlimited, segments_by_tool["unlimited"])
-    assign_spans(paddle, segments_by_tool["paddle"])
-    boxes = textract + unlimited + paddle
+
+
+def main() -> int:
+    """Render OCR JSON for one raw image as a self-contained HTML file."""
+    args = parse_args()
+    image_paths = [image.expanduser().resolve() for image in args.images]
+    for image_path in image_paths:
+        if not image_path.is_file():
+            raise ValueError(f"Raw image does not exist: {image_path}")
+    output_path = (
+        args.output.expanduser().resolve()
+        if args.output
+        else (
+            PROCESSED_DIR / image_paths[0].stem / "ocr_boxes.html"
+            if len(image_paths) == 1
+            else PROCESSED_DIR / "ocr_boxes.html"
+        )
+    )
+    documents = [
+        make_document(image_path, args, len(image_paths) > 1)
+        for image_path in image_paths
+    ]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        html_document(image_data_url(image_path), boxes, segments_by_tool),
+        html_document(documents),
         encoding="utf-8",
     )
-    print(f"Saved interactive OCR boxes to {output_path} ({len(boxes)} boxes)")
+    box_count = sum(len(document["boxes"]) for document in documents)
+    print(
+        f"Saved interactive OCR boxes to {output_path} "
+        f"({len(documents)} documents, {box_count} boxes)"
+    )
     return 0
 
 

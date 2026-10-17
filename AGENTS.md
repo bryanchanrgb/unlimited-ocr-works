@@ -3,6 +3,7 @@
 - Make the smallest code changes that solve the task; avoid unnecessary additions.
 - Before implementing a feature, inspect the existing codebase and reuse or extend existing functionality rather than duplicating it.
 - Create only files and directories needed for the requested change. Do not add placeholders or speculative project structure.
+- Store reusable repository skills in `.agents/skills/<skill-name>/SKILL.md`.
 - Use `pathlib` for filesystem paths, and write code that works on Windows, macOS, and Linux. Avoid platform-specific path assumptions.
 - Keep code compatible with the Python version declared in `pyproject.toml` (currently Python 3.14 or newer).
 - After code changes, run relevant tests when a test suite is available. Use the project's configured linter and formatter; prefer Ruff for Python linting and formatting when no tools are configured. Do not add tooling solely to validate a change unless requested.
