@@ -90,29 +90,29 @@ for Unlimited-OCR, and `--paddle-lang` or `--paddle-python` for PaddleOCR.
 ## OCR bounding-box viewer
 
 `scripts/render_ocr_boxes.py` creates a self-contained interactive HTML viewer
-from the Textract, Unlimited-OCR, and PaddleOCR JSON for one or more source
-images. It embeds the source image alongside the corresponding pre-generated
-HTML reconstruction from `data/processed/llm_optimized`. Select a provider to
-view its boxes on the left and reconstruction on the right. Select **Raw image**
-to display the source image without boxes alongside the raw-image
-reconstruction. The reconstruction scales to its pane width and its pane height
-matches the rendered source image. Hovering and clicking boxes affects only the
-box overlay; Textract `PAGE` blocks are omitted, while Textract child blocks and
-PaddleOCR table cells/text take hover precedence over their parent regions.
+for every discovered image under `data/raw`. It embeds each source image
+alongside the corresponding pre-generated HTML reconstruction from
+`data/processed/llm_optimized`. Select a document and provider to view its
+boxes on the left and reconstruction on the right. Select **Raw image** to
+display the source image without boxes alongside the raw-image reconstruction.
+The viewer exposes only providers available for the selected document. The
+reconstruction scales to its pane width and its pane height matches the rendered
+source image. Hovering and clicking boxes affects only the box overlay; Textract
+`PAGE` blocks are omitted, while Textract child blocks and PaddleOCR table
+cells/text take hover precedence over their parent regions.
 
 ```shell
-uv run python scripts/render_ocr_boxes.py data/raw/scan.png
-uv run python scripts/render_ocr_boxes.py data/raw/page-1.png data/raw/page-2.png
+uv run python scripts/render_ocr_boxes.py
 ```
 
 The viewer requires standardized reconstruction files: provider reconstructions
 at `data/processed/llm_optimized/<input-name>/<provider>/reconstruction.html`
 and the raw-image reconstruction at
 `data/processed/llm_optimized/<input-name>/raw_image/reconstruction.html`.
-The default output is `data/processed/<input-name>/ocr_boxes.html`. Override
-the input JSON locations with `--textract`, `--unlimited`, and `--paddle`, or
-use `--output` to choose another HTML path. For multiple images, the default is
-`data/processed/ocr_boxes.html`, with a document selector in the viewer.
+The default output is `data/processed/ocr_boxes.html`. Pass one or more image
+paths to restrict the viewer, override a single image's JSON locations with
+`--textract`, `--unlimited`, and `--paddle`, or use `--output` to choose another
+HTML path.
 
 ## Unlimited-OCR raw capture
 
@@ -197,23 +197,8 @@ line records are `[text, xyxy_box, confidence, optional_polygon]`, regions are
    `.agents/skills/raw-image-html-reconstruction/SKILL.md` once for the raw
    image. These skills write reconstructions to
    `data/processed/llm_optimized/<document>/<source>/reconstruction.html`.
-4. Render the provider box overlay and its reconstruction panel:
+4. Render the unified cross-document, cross-provider comparison viewer:
 
    ```shell
-   uv run python scripts/render_ocr_boxes.py data/raw/document.png
+   uv run python scripts/render_ocr_boxes.py
    ```
-
-5. Combine all standardized reconstruction HTML files for cross-document and
-   cross-provider comparison:
-
-   ```shell
-   uv run python scripts/combine_reconstruction_html.py
-   ```
-
-## Reconstruction comparison
-
-`data/processed/llm_optimized/reconstruction_comparison.html` is a
-self-contained viewer for the generated reconstruction HTML. Use its document
-and source selectors to compare each available provider reconstruction with the
-raw-image reconstruction. Recreate it with
-`scripts/combine_reconstruction_html.py`.

@@ -13,16 +13,17 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 LLM_OPTIMIZED_DIR = PROCESSED_DIR / "llm_optimized"
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse paths for the raw image, OCR results, and rendered HTML."""
+    """Parse optional raw images, OCR results, and rendered HTML paths."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "images",
-        nargs="+",
+        nargs="*",
         type=Path,
-        help="One or more raw PNG or JPEG images",
+        help="Raw PNG or JPEG images (default: every image in data/raw)",
     )
     parser.add_argument("--textract", type=Path, help="Textract result JSON path")
     parser.add_argument(
@@ -33,6 +34,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--paddle", type=Path, help="PaddleOCR result JSON path")
     parser.add_argument("--output", type=Path, help="Rendered HTML output path")
     return parser.parse_args()
+
+
+def resolve_image_paths(images: list[Path]) -> list[Path]:
+    """Return explicit images or discover every supported image in data/raw."""
+    candidates = images or sorted(
+        path
+        for path in (PROJECT_ROOT / "data" / "raw").iterdir()
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+    )
+    if not candidates:
+        raise ValueError("No raw PNG or JPEG images were provided or discovered")
+    resolved = [path.expanduser().resolve() for path in candidates]
+    for path in resolved:
+        if not path.is_file():
+            raise ValueError(f"Raw image does not exist: {path}")
+        if path.suffix.lower() not in IMAGE_SUFFIXES:
+            raise ValueError(f"Raw image must be a PNG or JPEG: {path}")
+    return resolved
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -452,6 +471,7 @@ const tooltip = document.getElementById("tooltip");
 const counts = document.getElementById("counts");
 const reconstruction = document.getElementById("reconstruction");
 const documentPicker = document.getElementById("document-picker");
+const providerControls = [...document.querySelectorAll('input[name="provider"]')];
 let activeTool = "textract";
 let selectedBox = null;
 let hoveredBox = null;
@@ -465,8 +485,19 @@ function setDocument(index) {
   hoveredBox = null;
   image.alt = activeDocument.name;
   image.src = activeDocument.image_url;
+  updateProviderControls();
   renderReconstruction();
   renderBoxes();
+}
+
+function updateProviderControls() {
+  const available = new Set(activeDocument.providers);
+  providerControls.forEach(control => {
+    control.disabled = !available.has(control.value);
+    control.parentElement.hidden = !available.has(control.value);
+  });
+  if (!available.has(activeTool)) activeTool = activeDocument.providers[0];
+  providerControls.find(control => control.value === activeTool).checked = true;
 }
 
 function semanticType(box) {
@@ -590,6 +621,7 @@ function refreshHighlights() {
 
 document.querySelectorAll('input[name="provider"]').forEach(control => {
   control.addEventListener("change", () => {
+    if (control.disabled) return;
     activeTool = control.value;
     selectedBox = null;
     hoveredBox = null;
@@ -652,15 +684,24 @@ def reconstruction_paths(image_path: Path) -> dict[str, Path]:
     }
 
 
-def load_reconstructions(image_path: Path) -> dict[str, str]:
-    """Load every provider and raw-image reconstruction for one source image."""
+def load_reconstructions(
+    image_path: Path,
+    providers: set[str],
+) -> dict[str, str]:
+    """Load reconstructions for the available OCR providers and raw image."""
     paths = reconstruction_paths(image_path)
-    missing = [path for path in paths.values() if not path.is_file()]
+    requested_providers = providers | {"raw_image"}
+    missing = [
+        paths[provider]
+        for provider in requested_providers
+        if not paths[provider].is_file()
+    ]
     if missing:
         rendered_paths = ", ".join(str(path) for path in missing)
         raise ValueError(f"Reconstruction HTML does not exist: {rendered_paths}")
     return {
-        provider: path.read_text(encoding="utf-8") for provider, path in paths.items()
+        provider: paths[provider].read_text(encoding="utf-8")
+        for provider in requested_providers
     }
 
 
@@ -675,43 +716,50 @@ def make_document(
         args,
         multiple_images,
     )
-    for label, path in (
-        ("Textract", textract_path),
-        ("Unlimited-OCR", unlimited_path),
-        ("PaddleOCR", paddle_path),
-    ):
-        if not path.is_file():
-            raise ValueError(f"{label} JSON does not exist: {path}")
+    providers: dict[str, list[dict[str, Any]]] = {}
+    reconstruction_files = reconstruction_paths(image_path)
+    provider_paths = (
+        ("textract", "Textract", textract_path, args.textract, textract_boxes),
+        (
+            "unlimited",
+            "Unlimited-OCR",
+            unlimited_path,
+            args.unlimited,
+            unlimited_boxes,
+        ),
+        ("paddle", "PaddleOCR", paddle_path, args.paddle, paddle_boxes),
+    )
+    for provider, label, path, override, box_loader in provider_paths:
+        reconstruction_path = reconstruction_files[provider]
+        if path.is_file() and reconstruction_path.is_file():
+            providers[provider] = box_loader(load_json(path))
+        elif override:
+            if not path.is_file():
+                raise ValueError(f"{label} JSON does not exist: {path}")
+            raise ValueError(
+                f"{label} reconstruction HTML does not exist: {reconstruction_path}"
+            )
 
-    textract_document = load_json(textract_path)
-    unlimited_document = load_json(unlimited_path)
-    paddle_document = load_json(paddle_path)
-    textract = textract_boxes(textract_document)
-    unlimited = unlimited_boxes(unlimited_document)
-    paddle = paddle_boxes(paddle_document)
+    if not providers:
+        raise ValueError(f"No OCR JSON results exist for {image_path}")
+
     return {
         "name": image_path.name,
         "image_url": image_data_url(image_path),
-        "boxes": textract + unlimited + paddle,
-        "reconstructions": load_reconstructions(image_path),
+        "boxes": [box for boxes in providers.values() for box in boxes],
+        "providers": [*providers, "raw_image"],
+        "reconstructions": load_reconstructions(image_path, set(providers)),
     }
 
 
 def main() -> int:
     """Render OCR JSON for one raw image as a self-contained HTML file."""
     args = parse_args()
-    image_paths = [image.expanduser().resolve() for image in args.images]
-    for image_path in image_paths:
-        if not image_path.is_file():
-            raise ValueError(f"Raw image does not exist: {image_path}")
+    image_paths = resolve_image_paths(args.images)
     output_path = (
         args.output.expanduser().resolve()
         if args.output
-        else (
-            PROCESSED_DIR / image_paths[0].stem / "ocr_boxes.html"
-            if len(image_paths) == 1
-            else PROCESSED_DIR / "ocr_boxes.html"
-        )
+        else PROCESSED_DIR / "ocr_boxes.html"
     )
     documents = [
         make_document(image_path, args, len(image_paths) > 1)
