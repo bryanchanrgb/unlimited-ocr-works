@@ -5,8 +5,16 @@ build/
 dist/
 wheels/
 *.egg-info
+
+# Data files
+data/
 *.pdf
 *.csv
+*.png
+*.jpg
+.env
 
 # Virtual environments
 .venv
+.venv-paddleocr/
+.vscode/
