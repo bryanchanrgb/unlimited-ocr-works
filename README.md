@@ -48,7 +48,8 @@ flowchart TD
 
 `scripts/run_textract.py` analyzes PNG/JPEG images synchronously, or PDF/TIFF
 documents asynchronously via a temporary S3 upload that is deleted after the
-job, using Textract's `FORMS` and `TABLES` features. The complete block
+job, using [Amazon Textract](https://aws.amazon.com/textract/)'s `FORMS` and
+`TABLES` features. The complete block
 response is saved to `data/processed/<input-name>/textract/result.json`.
 
 Install dependencies with `uv sync`. Configure AWS credentials using the normal
@@ -66,7 +67,9 @@ defaults.
 
 ## PaddleOCR
 
-`scripts/run_paddle_ocr.py` runs the PP-StructureV3 pipeline with table
+`scripts/run_paddle_ocr.py` runs
+[PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)'s PP-StructureV3
+pipeline with table
 recognition and table-cell results, writing the raw response to
 `data/processed/<input-name>/paddle_ocr/result.json`. Orientation correction
 and unwarping are disabled so coordinates stay in the source-image system used
@@ -91,8 +94,11 @@ Use `--python`, `--lang`, or `--output` to override the defaults.
 
 ## Unlimited-OCR
 
-`scripts/run_unlimited_ocr.py` runs the sibling `Unlimited-OCR-Universal`
-checkout's demo using that checkout's `.venv` (create/sync it first, or pass
+`scripts/run_unlimited_ocr.py` runs the sibling
+[Unlimited-OCR-Universal](https://huggingface.co/sabafallah/Unlimited-OCR-Universal)
+checkout's demo (a device-agnostic fork of
+[baidu/Unlimited-OCR](https://github.com/baidu/Unlimited-OCR)) using that
+checkout's `.venv` (create/sync it first, or pass
 `--repo`/`--python`). It writes the demo artifacts (`result.md`, annotated
 images, crops) plus `raw_generation.json` — prompt, token IDs, raw and
 processed text, and detected objects with pixel boxes — to
