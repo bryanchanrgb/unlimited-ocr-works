@@ -5,8 +5,8 @@ description: Create a static, text-only visual HTML reconstruction from LLM-opti
 
 # OCR HTML Reconstruction
 
-Create a directly authored, static HTML visual reconstruction from a file under
-`data/processed/llm_optimized`.
+Create a directly authored, static HTML visual reconstruction from a compact
+`*_compact.json` file under `data/processed/<document>/<provider>`.
 
 ## Required constraints
 
@@ -91,8 +91,8 @@ unambiguous.
 Create one self-contained `.html` file. Its visible `<main>` must contain the
 readable document reconstruction, not an image replacement or fallback.
 Save it as
-`data/processed/llm_optimized/<document>/<provider>/reconstruction.html`,
-where `<provider>` is the optimized input's parent directory.
+`data/processed/<document>/<provider>/reconstruction.html`,
+where `<provider>` is the compact input's parent directory.
 
 ## Final review
 

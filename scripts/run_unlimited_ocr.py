@@ -15,10 +15,14 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from output_layout import (
+    PROJECT_ROOT,
+    RASTER_IMAGE_SUFFIXES,
+    provider_dir,
+    venv_python,
+)
+
 DEFAULT_REPO = PROJECT_ROOT.parent / "Unlimited-OCR-Universal"
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 EVENT_PATTERN = re.compile(
     r"<\|ref\|>(.*?)<\|/ref\|>|<\|det\|>(.*?)<\|/det\|>", re.DOTALL
 )
@@ -92,12 +96,7 @@ def worker_python(repo: Path, requested_python: Path | None) -> Path:
     if requested_python is not None:
         executable = requested_python.expanduser().resolve()
     else:
-        relative_executable = (
-            Path("Scripts") / "python.exe"
-            if os.name == "nt"
-            else Path("bin") / "python"
-        )
-        executable = repo / ".venv" / relative_executable
+        executable = venv_python(repo / ".venv")
     if not executable.is_file():
         raise ValueError(
             f"Python executable not found: {executable}. Create the model repo's "
@@ -121,13 +120,13 @@ def launch_worker(args: argparse.Namespace) -> int:
     if args.kind == "pdf":
         if len(inputs) != 1 or inputs[0].suffix.lower() != ".pdf":
             raise ValueError("pdf mode requires exactly one PDF input")
-    elif any(path.suffix.lower() not in IMAGE_SUFFIXES for path in inputs):
+    elif any(path.suffix.lower() not in RASTER_IMAGE_SUFFIXES for path in inputs):
         raise ValueError("image and multi modes accept image files only")
 
     output = (
         args.output.expanduser().resolve()
         if args.output
-        else PROCESSED_DIR / inputs[0].stem / "unlimited_ocr"
+        else provider_dir(inputs[0].stem, "unlimited_ocr")
     )
     output.mkdir(parents=True, exist_ok=True)
     python = worker_python(repo, args.python)
@@ -505,7 +504,7 @@ def main() -> int:
         output = (
             args.output.expanduser().resolve()
             if args.output
-            else PROCESSED_DIR / inputs[0].stem / "unlimited_ocr"
+            else provider_dir(inputs[0].stem, "unlimited_ocr")
         )
         return launch_worker(
             argparse.Namespace(

@@ -13,9 +13,8 @@ from typing import Any
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
+from output_layout import PROJECT_ROOT, provider_result_path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 ASYNC_SUFFIXES = {".pdf", ".tif", ".tiff"}
 FEATURE_TYPES = ["FORMS", "TABLES"]
@@ -212,9 +211,7 @@ def main() -> int:
             }
 
         payload = make_output(input_path, result)
-        output_path = (
-            args.output or PROCESSED_DIR / input_path.stem / "textract" / "result.json"
-        )
+        output_path = args.output or provider_result_path(input_path.stem, "textract")
         output_path = output_path.expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(

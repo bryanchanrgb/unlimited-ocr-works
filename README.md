@@ -38,9 +38,8 @@ Examples:
 - `uv run python scripts/run_textract.py data/raw/scan.png --region us-east-1 --output data/processed/scan/textract/result.json`
 
 By default, JSON is saved to
-`data/processed/<input-name>/textract/result.json`, alongside the
-`data/processed/<input-name>/unlimited_ocr` output structure used by
-`run_unlimited_ocr.py`. Use `--output` to choose another path. Async jobs are
+`data/processed/<input-name>/textract/result.json`.
+Use `--output` to choose another path. Async jobs are
 polled every five seconds by default, with a 30-minute timeout; use
 `--poll-interval` and `--timeout` to change these values. PDF/TIFF uploads are
 cleaned up after the job reaches a terminal state. If the client times out while
@@ -60,7 +59,10 @@ in its own CPython 3.13 environment:
 
 ```shell
 uv venv --python 3.13 .venv-paddleocr
+# Windows
 uv pip install --python .venv-paddleocr/Scripts/python.exe paddlepaddle==3.2.2 paddleocr==3.7.0 "paddlex[ocr]==3.7.2"
+# macOS/Linux
+uv pip install --python .venv-paddleocr/bin/python paddlepaddle==3.2.2 paddleocr==3.7.0 "paddlex[ocr]==3.7.2"
 ```
 
 Run it against an image:
@@ -71,48 +73,6 @@ uv run python scripts/run_paddle_ocr.py data/raw/scan.png
 
 Use `--python` to select a different PaddleOCR environment, `--lang` to change
 the OCR language, or `--output` to select a different JSON path.
-
-## Running all providers
-
-`scripts/run_all_ocr.py` runs Textract, Unlimited-OCR, and PaddleOCR for each
-supplied image. It preserves each provider's normal output and writes batch
-metadata containing UTC start/end times, provider commands and parameters,
-return codes, diagnostic output, and elapsed runtime in seconds.
-
-```shell
-uv run python scripts/run_all_ocr.py data/raw/*.png data/raw/*.jpg
-```
-
-The metadata defaults to `data/processed/ocr_run_metadata.json`. Use
-`--metadata` to choose another path, `--region` for Textract, `--unlimited-mode`
-for Unlimited-OCR, and `--paddle-lang` or `--paddle-python` for PaddleOCR.
-
-## OCR bounding-box viewer
-
-`scripts/render_ocr_boxes.py` creates a self-contained interactive HTML viewer
-for every discovered image under `data/raw`. It embeds each source image
-alongside the corresponding pre-generated HTML reconstruction from
-`data/processed/llm_optimized`. Select a document and provider to view its
-boxes on the left and reconstruction on the right. Select **Raw image** to
-display the source image without boxes alongside the raw-image reconstruction.
-The viewer exposes only providers available for the selected document. The
-reconstruction scales to its pane width and its pane height matches the rendered
-source image. Hovering and clicking boxes affects only the box overlay; Textract
-`PAGE` blocks are omitted, while Textract child blocks and PaddleOCR table
-cells/text take hover precedence over their parent regions.
-
-```shell
-uv run python scripts/render_ocr_boxes.py
-```
-
-The viewer requires standardized reconstruction files: provider reconstructions
-at `data/processed/llm_optimized/<input-name>/<provider>/reconstruction.html`
-and the raw-image reconstruction at
-`data/processed/llm_optimized/<input-name>/raw_image/reconstruction.html`.
-The default output is `data/processed/ocr_boxes.html`. Pass one or more image
-paths to restrict the viewer, override a single image's JSON locations with
-`--textract`, `--unlimited`, and `--paddle`, or use `--output` to choose another
-HTML path.
 
 ## Unlimited-OCR raw capture
 
@@ -146,15 +106,63 @@ Pass `--repo` if the model checkout is not at the sibling default location, or
 begin with `<image>`. The image mode applies to one image; multi-image and PDF
 inference use the model's base mode.
 
-## LLM-optimized OCR JSON
+## Running all providers
 
-`scripts/optimize_ocr_for_llm.py` converts every OCR JSON under
-`data/processed` into a compact counterpart under
-`data/processed/llm_optimized`. It never modifies the raw provider responses.
+`scripts/run_all_ocr.py` runs Textract, Unlimited-OCR, and PaddleOCR for each
+supplied image. It preserves each provider's normal output and writes batch
+metadata containing UTC start/end times, provider commands and parameters,
+return codes, diagnostic output, and elapsed runtime in seconds. After the
+providers finish, it also writes a compact LLM-optimized `<name>_compact.json`
+copy of every OCR JSON alongside each raw file, never modifying the raw
+provider responses.
 
 ```shell
-uv run python scripts/optimize_ocr_for_llm.py
+uv run python scripts/run_all_ocr.py data/raw/*.png data/raw/*.jpg
 ```
+
+The metadata defaults to `data/processed/ocr_run_metadata.json`. Use
+`--metadata` to choose another path, `--region` for Textract, `--unlimited-mode`
+for Unlimited-OCR, and `--paddle-lang` or `--paddle-python` for PaddleOCR.
+Pass `--bucket` to enable Textract analysis of TIFF inputs; Textract is skipped
+with a notice for formats it cannot process (BMP, WebP, or TIFF without
+`--bucket`). Files that cannot be compacted are skipped with a warning instead
+of failing the batch.
+
+## OCR bounding-box viewer
+
+`scripts/render_ocr_boxes.py` creates a self-contained interactive HTML viewer
+for every discovered BMP, JPEG, PNG, or WebP image under `data/raw`. It embeds
+each source image
+alongside the corresponding pre-generated HTML reconstruction from
+`data/processed/<input-name>`. Select a document and provider to view its
+boxes on the left and reconstruction on the right. Select **Raw image** to
+display the source image without boxes alongside the raw-image reconstruction.
+The viewer exposes only providers available for the selected document. The
+reconstruction scales to its pane width and its pane height matches the rendered
+source image. Hovering and clicking boxes affects only the box overlay; Textract
+`PAGE` blocks are omitted, while Textract child blocks and PaddleOCR table
+cells/text take hover precedence over their parent regions.
+
+```shell
+uv run python scripts/render_ocr_boxes.py
+```
+
+The viewer requires standardized reconstruction files: provider reconstructions
+at `data/processed/<input-name>/<provider>/reconstruction.html`
+and the raw-image reconstruction at
+`data/processed/<input-name>/raw_image/reconstruction.html`.
+The default output is `data/processed/ocr_comparison.html`, a standalone file
+that embeds every source image and reconstruction for sharing. Pass one or more image
+paths to restrict the viewer, override a single image's JSON locations with
+`--textract`, `--unlimited`, and `--paddle`, or use `--output` to choose another
+HTML path.
+
+## LLM-optimized OCR JSON
+
+As its final step, `scripts/run_all_ocr.py` converts every raw OCR JSON under
+`data/processed` into a compact `<name>_compact.json` counterpart in the same
+directory (for example, `textract/result_compact.json` next to
+`textract/result.json`). It never modifies the raw provider responses.
 
 The compact files retain the content and layout evidence required to reproduce a
 document: source filename, page dimensions, reading-order text, pixel or
@@ -179,25 +187,21 @@ line records are `[text, xyxy_box, confidence, optional_polygon]`, regions are
 
 ## End-to-end reconstruction workflow
 
-1. Run each configured OCR provider:
+1. Run each configured OCR provider; this also creates the compact
+   LLM-optimized OCR JSON used by agents:
 
    ```shell
    uv run python scripts/run_all_ocr.py data/raw/document.png
    ```
 
-2. Create compact OCR inputs for agents:
-
-   ```shell
-   uv run python scripts/optimize_ocr_for_llm.py
-   ```
-
-3. Ask a Copilot agent to apply
+2. Ask a Cursor agent to apply
    `.agents/skills/ocr-html-reconstruction/SKILL.md` once for each optimized
    provider JSON, and
    `.agents/skills/raw-image-html-reconstruction/SKILL.md` once for the raw
    image. These skills write reconstructions to
-   `data/processed/llm_optimized/<document>/<source>/reconstruction.html`.
-4. Render the unified cross-document, cross-provider comparison viewer:
+   `data/processed/<document>/<source>/reconstruction.html`.
+
+3. Render the unified cross-document, cross-provider comparison viewer:
 
    ```shell
    uv run python scripts/render_ocr_boxes.py

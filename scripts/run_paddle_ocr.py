@@ -4,26 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
-
-
-def default_python() -> Path:
-    """Return the PaddleOCR environment interpreter for the current platform."""
-    executable = "python.exe" if os.name == "nt" else "python"
-    return (
-        PROJECT_ROOT
-        / ".venv-paddleocr"
-        / ("Scripts" if os.name == "nt" else "bin")
-        / executable
-    )
+from output_layout import (
+    PROJECT_ROOT,
+    RASTER_IMAGE_SUFFIXES,
+    provider_result_path,
+    venv_python,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,7 +48,7 @@ def validate_input(input_path: Path) -> None:
     """Ensure the source is a supported local image."""
     if not input_path.is_file():
         raise ValueError(f"Input file does not exist: {input_path}")
-    if input_path.suffix.lower() not in IMAGE_SUFFIXES:
+    if input_path.suffix.lower() not in RASTER_IMAGE_SUFFIXES:
         raise ValueError("Input must be a BMP, JPEG, PNG, TIFF, or WebP image")
 
 
@@ -105,10 +96,12 @@ def main() -> int:
         output_path = (
             args.output.expanduser().resolve()
             if args.output
-            else PROCESSED_DIR / input_path.stem / "paddle_ocr" / "result.json"
+            else provider_result_path(input_path.stem, "paddle_ocr")
         )
         executable = (
-            args.python.expanduser().resolve() if args.python else default_python()
+            args.python.expanduser().resolve()
+            if args.python
+            else venv_python(PROJECT_ROOT / ".venv-paddleocr")
         )
         if not executable.is_file():
             raise ValueError(

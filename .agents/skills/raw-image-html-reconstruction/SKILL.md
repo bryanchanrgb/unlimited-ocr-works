@@ -41,7 +41,7 @@ image using the agent's built-in image modality.
 Create one self-contained `.html` file. Its visible `<main>` must contain the
 readable document reconstruction, not an image replacement or fallback.
 Save it as
-`data/processed/llm_optimized/<document>/raw_image/reconstruction.html`.
+`data/processed/<document>/raw_image/reconstruction.html`.
 
 ## Final review
 

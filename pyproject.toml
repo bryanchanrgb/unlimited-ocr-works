@@ -1,7 +1,7 @@
 [project]
 name = "unlimited-ocr-works"
 version = "0.1.0"
-description = "Add your description here"
+description = "Compare AWS Textract, Unlimited-OCR, and PaddleOCR output with compact LLM-ready JSON and HTML reconstructions"
 readme = "README.md"
 authors = [
     { name = "bryanchanrgb", email = "bryanchanrgb@gmail.com" }
@@ -11,9 +11,6 @@ dependencies = [
     "boto3>=1.43.114",
     "python-dotenv>=1.2.4",
 ]
-
-[project.scripts]
-unlimited-ocr-works = "unlimited_ocr_works:main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]

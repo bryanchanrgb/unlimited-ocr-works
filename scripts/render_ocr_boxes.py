@@ -10,10 +10,16 @@ import re
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-LLM_OPTIMIZED_DIR = PROCESSED_DIR / "llm_optimized"
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+from output_layout import (
+    PROCESSED_DIR,
+    RAW_DIR,
+    provider_result_path,
+    reconstruction_path,
+)
+from textract_blocks import child_ids, descendant_text
+
+IMAGE_SUFFIXES = {".bmp", ".jpg", ".jpeg", ".png", ".webp"}
+IMAGE_MIME_TYPES = {"image/bmp", "image/jpeg", "image/png", "image/webp"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,7 +29,7 @@ def parse_args() -> argparse.Namespace:
         "images",
         nargs="*",
         type=Path,
-        help="Raw PNG or JPEG images (default: every image in data/raw)",
+        help="Raw BMP, JPEG, PNG, or WebP images (default: every image in data/raw)",
     )
     parser.add_argument("--textract", type=Path, help="Textract result JSON path")
     parser.add_argument(
@@ -40,17 +46,19 @@ def resolve_image_paths(images: list[Path]) -> list[Path]:
     """Return explicit images or discover every supported image in data/raw."""
     candidates = images or sorted(
         path
-        for path in (PROJECT_ROOT / "data" / "raw").iterdir()
+        for path in RAW_DIR.iterdir()
         if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
     )
     if not candidates:
-        raise ValueError("No raw PNG or JPEG images were provided or discovered")
+        raise ValueError(
+            "No raw BMP, JPEG, PNG, or WebP images were provided or discovered"
+        )
     resolved = [path.expanduser().resolve() for path in candidates]
     for path in resolved:
         if not path.is_file():
             raise ValueError(f"Raw image does not exist: {path}")
         if path.suffix.lower() not in IMAGE_SUFFIXES:
-            raise ValueError(f"Raw image must be a PNG or JPEG: {path}")
+            raise ValueError(f"Raw image must be a BMP, JPEG, PNG, or WebP: {path}")
     return resolved
 
 
@@ -65,43 +73,15 @@ def load_json(path: Path) -> dict[str, Any]:
 def image_data_url(path: Path) -> str:
     """Return an image file as a self-contained data URL."""
     mime_type, _ = mimetypes.guess_type(path.name)
-    if mime_type not in {"image/jpeg", "image/png"}:
-        raise ValueError("The raw image must be a PNG or JPEG file")
+    if mime_type not in IMAGE_MIME_TYPES:
+        raise ValueError("The raw image must be a BMP, JPEG, PNG, or WebP file")
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 
 
-def child_ids(block: dict[str, Any]) -> list[str]:
-    """Return the IDs of every direct child in a Textract block."""
-    return [
-        child_id
-        for relationship in block.get("Relationships", [])
-        if relationship.get("Type") == "CHILD"
-        for child_id in relationship.get("Ids", [])
-    ]
-
-
 def textract_text(block_id: str, blocks_by_id: dict[str, dict[str, Any]]) -> str | None:
     """Collect text from a block or its descendants, without traversing cycles."""
-    texts: list[str] = []
-    visited: set[str] = set()
-
-    def visit(current_id: str) -> None:
-        """Visit one block and recursively collect its descendant text."""
-        if current_id in visited:
-            return
-        visited.add(current_id)
-        block = blocks_by_id.get(current_id)
-        if block is None:
-            return
-        text = block.get("Text")
-        if isinstance(text, str) and text:
-            texts.append(text)
-        for child_id in child_ids(block):
-            visit(child_id)
-
-    visit(block_id)
-    return " ".join(texts) or None
+    return descendant_text(block_id, blocks_by_id) or None
 
 
 def textract_depths(blocks_by_id: dict[str, dict[str, Any]]) -> dict[str, int]:
@@ -659,28 +639,31 @@ def result_paths(
         raise ValueError(
             "--textract, --unlimited, and --paddle may only be used with one image"
         )
-    root = PROCESSED_DIR / image_path.stem
+    stem = image_path.stem
     return (
         args.textract.expanduser().resolve()
         if args.textract
-        else root / "textract" / "result.json",
+        else provider_result_path(stem, "textract"),
         args.unlimited.expanduser().resolve()
         if args.unlimited
-        else root / "unlimited_ocr" / "raw_generation.json",
+        else provider_result_path(stem, "unlimited_ocr", "raw_generation.json"),
         args.paddle.expanduser().resolve()
         if args.paddle
-        else root / "paddle_ocr" / "result.json",
+        else provider_result_path(stem, "paddle_ocr"),
     )
 
 
 def reconstruction_paths(image_path: Path) -> dict[str, Path]:
     """Return standardized reconstruction HTML paths for one source image."""
-    root = LLM_OPTIMIZED_DIR / image_path.stem
+    directories = {
+        "textract": "textract",
+        "unlimited": "unlimited_ocr",
+        "paddle": "paddle_ocr",
+        "raw_image": "raw_image",
+    }
     return {
-        "textract": root / "textract" / "reconstruction.html",
-        "unlimited": root / "unlimited_ocr" / "reconstruction.html",
-        "paddle": root / "paddle_ocr" / "reconstruction.html",
-        "raw_image": root / "raw_image" / "reconstruction.html",
+        provider: reconstruction_path(image_path.stem, directory)
+        for provider, directory in directories.items()
     }
 
 
@@ -759,7 +742,7 @@ def main() -> int:
     output_path = (
         args.output.expanduser().resolve()
         if args.output
-        else PROCESSED_DIR / "ocr_boxes.html"
+        else PROCESSED_DIR / "ocr_comparison.html"
     )
     documents = [
         make_document(image_path, args, len(image_paths) > 1)

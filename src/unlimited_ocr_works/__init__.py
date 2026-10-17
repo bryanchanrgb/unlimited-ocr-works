@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from unlimited-ocr-works!")
+"""Multi-provider OCR comparison toolkit."""
