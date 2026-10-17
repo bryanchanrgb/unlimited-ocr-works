@@ -16,14 +16,6 @@ instead of static keys when running on AWS where possible. Never commit `.env`.
 Copy `.env.example` to `.env` to start; add `AWS_SESSION_TOKEN` when using
 temporary credentials.
 
-Verify that the configured credentials can authenticate before processing a
-document:
-
-`uv run python scripts/verify_aws_connection.py`
-
-The check calls AWS STS `GetCallerIdentity` and prints the authenticated IAM
-identity. Pass `--region us-east-1` to override the configured region.
-
 Images are sent using Textract's synchronous `AnalyzeDocument` operation. PDF
 and TIFF files use asynchronous analysis: the script uploads a temporary copy to
 an S3 bucket, polls Textract for completion, paginates all returned blocks, then
